@@ -94,7 +94,7 @@ def root():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "dead"}
+    return {"status": "alive"}
 
 
 @app.get("/readyz")
