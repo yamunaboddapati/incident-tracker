@@ -46,20 +46,36 @@ jobs:
           exit-code: "1"
 
   build-image:
-    name: Build and scan image
+    name: Build, scan and push image
     needs: [test, scan-code]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build image
-        run: docker build -t incident-tracker:${{ github.sha }} .
+        run: docker build -t "$IMAGE:${{ github.sha }}" .
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: incident-tracker:${{ github.sha }}
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+
+      - name: Push image
+        if: github.event_name == 'push'
+        run: docker push "$IMAGE:${{ github.sha }}"
