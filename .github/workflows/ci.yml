@@ -79,3 +79,36 @@ jobs:
       - name: Push image
         if: github.event_name == 'push'
         run: docker push "$IMAGE:${{ github.sha }}"
+
+  update-gitops:
+    name: Update GitOps repo
+    needs: build-image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out GitOps repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yamunaboddapati/incident-tracker-gitops
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+          path: gitops
+
+      - name: Point the Deployment at the new image
+        working-directory: gitops
+        run: |
+          sed -i "s#image: ghcr.io/yamunaboddapati/incident-tracker:.*#image: ghcr.io/yamunaboddapati/incident-tracker:${GITHUB_SHA}#" apps/incident-tracker/deployment.yaml
+          git diff
+
+      - name: Commit and push
+        working-directory: gitops
+        run: |
+          if git diff --quiet; then
+            echo "Image already up to date, nothing to commit"
+            exit 0
+          fi
+          git config user.name "incident-tracker-ci"
+          git config user.email "incident-tracker-ci@users.noreply.github.com"
+          git commit -am "Deploy incident-tracker ${GITHUB_SHA::7}"
+          git push
