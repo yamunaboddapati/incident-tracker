@@ -1,14 +1,48 @@
+import time
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import count
 
-from fastapi import FastAPI, HTTPException, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
+from fastapi import FastAPI, HTTPException, Request, Response
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Histogram,
+    generate_latest,
+)
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Incident Tracker", version="0.2.0")
+app = FastAPI(title="Incident Tracker", version="0.3.0")
 
-REQUESTS = Counter("http_requests_total", "Total HTTP requests", ["path"])
+# ---------- Metrics (RED: Rate, Errors, Duration) ----------
+REQUESTS = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "path", "status"],
+)
+LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "path"],
+)
+
+
+@app.middleware("http")
+async def record_metrics(request: Request, call_next):
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    start = time.perf_counter()
+    status = "500"
+    try:
+        response = await call_next(request)
+        status = str(response.status_code)
+        return response
+    finally:
+        route = request.scope.get("route")
+        path = route.path if route else "unmatched"
+        REQUESTS.labels(request.method, path, status).inc()
+        LATENCY.labels(request.method, path).observe(time.perf_counter() - start)
 
 
 # ---------- Data models ----------
@@ -42,7 +76,7 @@ class Incident(IncidentCreate):
     created_at: datetime
 
 
-# ---------- In-memory storage (temporary; replaced by Postgres later) ----------
+# ---------- In-memory storage (temporary; a known limitation) ----------
 _incidents: dict[int, Incident] = {}
 _ids = count(1)
 
@@ -50,7 +84,6 @@ _ids = count(1)
 # ---------- Incident endpoints ----------
 @app.post("/incidents", response_model=Incident, status_code=201)
 def create_incident(data: IncidentCreate):
-    REQUESTS.labels(path="/incidents").inc()
     incident = Incident(
         id=next(_ids), created_at=datetime.now(timezone.utc), **data.model_dump()
     )
@@ -60,7 +93,6 @@ def create_incident(data: IncidentCreate):
 
 @app.get("/incidents", response_model=list[Incident])
 def list_incidents(status: Status | None = None):
-    REQUESTS.labels(path="/incidents").inc()
     items = list(_incidents.values())
     if status:
         items = [i for i in items if i.status == status]
@@ -69,7 +101,6 @@ def list_incidents(status: Status | None = None):
 
 @app.get("/incidents/{incident_id}", response_model=Incident)
 def get_incident(incident_id: int):
-    REQUESTS.labels(path="/incidents/{id}").inc()
     if incident_id not in _incidents:
         raise HTTPException(status_code=404, detail="Incident not found")
     return _incidents[incident_id]
@@ -77,7 +108,6 @@ def get_incident(incident_id: int):
 
 @app.patch("/incidents/{incident_id}", response_model=Incident)
 def update_incident(incident_id: int, data: IncidentUpdate):
-    REQUESTS.labels(path="/incidents/{id}").inc()
     if incident_id not in _incidents:
         raise HTTPException(status_code=404, detail="Incident not found")
     changes = data.model_dump(exclude_none=True)
@@ -88,7 +118,6 @@ def update_incident(incident_id: int, data: IncidentUpdate):
 # ---------- Platform endpoints ----------
 @app.get("/")
 def root():
-    REQUESTS.labels(path="/").inc()
     return {"service": "incident-tracker", "status": "ok"}
 
 

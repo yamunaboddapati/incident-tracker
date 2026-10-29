@@ -48,3 +48,11 @@ def test_metrics_endpoint():
     r = client.get("/metrics")
     assert r.status_code == 200
     assert "http_requests_total" in r.text
+
+
+def test_metrics_record_status_and_route_template():
+    client.get("/incidents/424242")  # a 404 on a templated route
+    text = client.get("/metrics").text
+    assert 'path="/incidents/{incident_id}"' in text
+    assert 'status="404"' in text
+    assert "http_request_duration_seconds_bucket" in text
