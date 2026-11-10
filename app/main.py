@@ -1,9 +1,14 @@
+import asyncio
+import os
+import random
+import sys
 import time
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import count
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -12,7 +17,18 @@ from prometheus_client import (
 )
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Incident Tracker", version="0.3.0")
+# ---------- Failure injection (for experiments) ----------
+# none | crash | errors | slow
+FAILURE_MODE = os.getenv("FAILURE_MODE", "none")
+ERROR_RATE = float(os.getenv("ERROR_RATE", "0.5"))
+SLOW_SECONDS = float(os.getenv("SLOW_SECONDS", "1.0"))
+PLATFORM_PATHS = {"/healthz", "/readyz", "/metrics"}
+
+if FAILURE_MODE == "crash":
+    print("FAILURE_MODE=crash: exiting on startup", file=sys.stderr)
+    sys.exit(1)
+
+app = FastAPI(title="Incident Tracker", version="0.4.0")
 
 # ---------- Metrics (RED: Rate, Errors, Duration) ----------
 REQUESTS = Counter(
@@ -35,12 +51,17 @@ async def record_metrics(request: Request, call_next):
     start = time.perf_counter()
     status = "500"
     try:
+        if request.url.path not in PLATFORM_PATHS:
+            if FAILURE_MODE == "slow":
+                await asyncio.sleep(SLOW_SECONDS)
+            if FAILURE_MODE == "errors" and random.random() < ERROR_RATE:
+                return JSONResponse({"detail": "Injected failure"}, status_code=500)
         response = await call_next(request)
         status = str(response.status_code)
         return response
     finally:
         route = request.scope.get("route")
-        path = route.path if route else "unmatched"
+        path = route.path if route else request.url.path
         REQUESTS.labels(request.method, path, status).inc()
         LATENCY.labels(request.method, path).observe(time.perf_counter() - start)
 
@@ -118,7 +139,7 @@ def update_incident(incident_id: int, data: IncidentUpdate):
 # ---------- Platform endpoints ----------
 @app.get("/")
 def root():
-    return {"service": "incident-tracker", "status": "ok"}
+    return {"service": "incident-tracker", "status": "ok", "failure_mode": FAILURE_MODE}
 
 
 @app.get("/healthz")

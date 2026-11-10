@@ -56,3 +56,26 @@ def test_metrics_record_status_and_route_template():
     assert 'path="/incidents/{incident_id}"' in text
     assert 'status="404"' in text
     assert "http_request_duration_seconds_bucket" in text
+
+
+def test_errors_mode_returns_500_but_probes_stay_healthy(monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main, "FAILURE_MODE", "errors")
+    monkeypatch.setattr(main, "ERROR_RATE", 1.0)
+    assert client.get("/incidents").status_code == 500
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/readyz").status_code == 200
+    assert 'status="500"' in client.get("/metrics").text
+
+
+def test_slow_mode_adds_latency_but_not_to_probes(monkeypatch):
+    import time
+    import app.main as main
+    monkeypatch.setattr(main, "FAILURE_MODE", "slow")
+    monkeypatch.setattr(main, "SLOW_SECONDS", 0.3)
+    start = time.perf_counter()
+    client.get("/incidents")
+    assert time.perf_counter() - start >= 0.3
+    start = time.perf_counter()
+    client.get("/healthz")
+    assert time.perf_counter() - start < 0.3
